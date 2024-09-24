@@ -1,0 +1,7 @@
+LAMMPS (2 Aug 2023)
+WARNING: Using I/O redirection is unreliable with parallel runs. Better to use the -in switch to read input files. (../lammps.cpp:537)
+# LAMMPS input script for RNEMD - Muller-Plathe
+
+variable        NAME index MP
+log             ${NAME}.log
+log             MP.log

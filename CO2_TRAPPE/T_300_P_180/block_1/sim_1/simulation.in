@@ -1,0 +1,215 @@
+# LAMMPS input script to run NPT, BOXRESHAPE for CUBOID box
+
+variable        NAME index CO2
+log             ${NAME}.log
+units		    real
+atom_style	    full
+boundary        p p p
+pair_style	    lj/cut/coul/long 12.0
+pair_modify     mix arithmetic tail yes   # Geometric for EPM2
+kspace_style    pppm 1e-6     
+bond_style      harmonic
+angle_style     harmonic
+
+read_data       ./data.lmp           # read the positions --------------comment it out for restarting
+#read_restart   2.restart
+
+#----------------------------------------------------------------------------#
+# FORCEFIELD - TraPPE Flexible model for CO2 (DOI- 10.1021/acs.jced.9b00006)
+#----------------------------------------------------------------------------#
+
+pair_coeff      1   1  0.1569891239   3.05             # [O]=C=O
+pair_coeff      2   2  0.0536545107   2.8              # O=[C]=O
+ 
+bond_coeff      1   1028.266  1.16
+
+angle_coeff     1   55.96  180
+
+mass            1   15.9994                       # O
+mass            2   12.0107                       # C
+
+set type        1   charge     -0.3500            # O
+set type        2   charge     +0.7000            # C
+
+#------------------------ VARIABLES------------------------------------------#
+
+variable  TEMP_INDEX       equal 300  # in K
+variable  PRESS_INDEX      equal 180  # in bar
+variable  RandomSeed       equal 4000  # RANDOM SEED   
+variable  nz_layers        equal 20
+variable  nx_layers        equal 3
+variable  timestep         equal 0.5
+
+variable  simulationTemp   equal ${TEMP_INDEX}
+variable  pressure         equal 0.987*${PRESS_INDEX}
+
+variable  Ninptpre         equal 100000             
+variable  Ninpt            equal 1000000
+variable  Npnpt            equal 2000000
+
+variable  equi_run         equal 1000000           #500000
+variable  npt_run          equal 10000000           #5000000
+variable  NBR              equal ${npt_run}/100   # Block averaging for density (NPT)
+
+variable  Density          equal density
+variable  Volume           equal vol
+
+variable  dumpfreq         equal 1000
+variable  thermofreq       equal 1000
+variable  printfreq        equal 1000
+variable  restartfreq      equal 1000000
+
+variable  NVT_init         equal 500000
+variable  NVE_reshape      equal 10000
+variable  NVT_run_2        equal 500000
+variable  NVE_cuboid       equal 500000
+              
+variable  thermo_num       equal 1000
+
+#---------------------------- GROUPS/NEIGHBOUR - LIST -----------------------------------------------------------------------#
+
+group           oxy  type 1
+group           carb type 2
+
+neighbor	    3.0 bin
+neigh_modify    every 1 delay 0 check yes
+run_style       verlet
+
+#---------------------------- CONGUGATE-GRADIENT MINIMIZATION --------------------------------------------------------#
+
+#minimize energytolerance forcetolerance max_iterations_of_minimizer max_number_of_force_or_energy_evaluations
+minimize        1e-6 1e-8 100000 10000000
+
+#---------------------------- NPT simulations  ---------------------------------------------------------------------#
+
+fix runnpt all npt temp ${simulationTemp} ${simulationTemp} 10 iso ${pressure} ${pressure} 100
+
+compute theta       all     angle/local   theta 
+compute length      all     bond/local    dist       
+
+compute theta_ave   all     reduce        ave       c_theta
+compute length_ave  all     reduce        ave       c_length 
+
+thermo_style custom step pe ke etotal press temp c_theta_ave c_length_ave v_Density
+thermo_modify flush yes
+thermo ${thermo_num}
+
+velocity	    all create ${simulationTemp} ${RandomSeed} mom yes rot yes dist gaussian
+
+#-----------------------
+# Run (Pre-Initialization)
+#-----------------------
+
+timestep    0.1
+run         ${Ninptpre} 
+
+timestep    0.2
+run         ${Ninptpre} 
+
+timestep    0.25
+run         ${Ninptpre} 
+
+timestep    0.5
+run         ${Ninptpre}
+
+#-----------------------
+# Run (Initialization)
+#-----------------------
+
+unfix       runnpt
+reset_timestep 0
+
+fix runnpt all npt temp ${simulationTemp} ${simulationTemp} 100 iso ${pressure} ${pressure} 1000
+
+timestep    ${timestep}
+run         ${Ninpt}
+
+unfix       runnpt
+reset_timestep 0
+
+#-------------------------------------------------- PRODUCTION ----------------------------------------------------------#
+
+fix	            npt_production all npt temp ${simulationTemp} ${simulationTemp} 100.0 iso ${pressure} ${pressure} 1000.0   
+fix             DensAve all ave/time 1 ${NBR} ${NBR} v_Density file density.dat
+fix             VoluAve all ave/time 1 ${npt_run} ${npt_run} v_Volume file volume.dat
+fix             Densfinal all ave/time 1 ${npt_run} ${npt_run} v_Density file density_final.dat
+
+restart         ${restartfreq} restart_${NAME}.1 restart_${NAME}.2
+
+run             ${npt_run}
+
+write_data      ${NAME}_final.data
+
+unfix           npt_production
+
+print ================================================================================================================
+print                                      "BOX-RESHAPE"
+print ================================================================================================================
+
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> BOX RESHAPE <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< #
+
+velocity	    all scale ${simulationTemp}
+velocity        all zero linear units box
+velocity        all zero angular units box
+
+# # --------------------------------------- NVT init for Reshape ------------------------------------------------------------#
+
+fix             NVT_init all nvt temp ${simulationTemp} ${simulationTemp} 100
+
+thermo_modify   flush yes
+thermo_style    custom step vol temp press ke pe etotal density xlo ylo zlo xhi yhi zhi
+thermo          ${thermo_num}
+
+run             ${NVT_init}
+unfix           NVT_init
+
+# --------------------------------------- NVE reshape run --------------------------------------------------------------------#
+
+fix		        NVE_1 all nve
+
+variable        average_volume  equal f_VoluAve
+variable        average_density equal f_Densfinal
+
+print           "The mean volume ${average_volume}"
+print           "The final density ${average_density}"
+
+variable        ulcubed      equal f_VoluAve/(${nx_layers}*${nx_layers}*${nz_layers})
+variable        unit_length  equal ${ulcubed}^0.33333333
+variable        new_x_length equal ${nx_layers}*v_unit_length
+variable        new_y_length equal ${nx_layers}*v_unit_length
+variable        new_z_length equal ${nz_layers}*v_unit_length
+
+unfix           DensAve
+unfix           VoluAve
+unfix           Densfinal
+
+fix             reshape all deform 1 x final 0.0 ${new_x_length} y final 0.0 ${new_x_length} &
+                                     z final 0.0 ${new_z_length} units box
+
+run             ${NVE_reshape}
+unfix           reshape
+unfix           NVE_1
+
+velocity	    all scale ${simulationTemp}
+velocity        all zero linear units box
+velocity        all zero angular units box
+
+# --------------------------------------- NVT-init -----------------------------------------------------------------------#
+
+fix             NVT_RE all nvt temp ${simulationTemp} ${simulationTemp} 100
+
+run             ${NVT_run_2}
+
+unfix           NVT_RE
+
+# --------------------------------------- NVE cuboid equilibration run -----------------------------------------------------#
+
+fix		        NVE_RE all nve
+
+run             ${NVE_cuboid}
+
+restart         1000000 restart_${NAME}.1 restart_${NAME}.2
+
+write_data      ${NAME}_cuboid.data
+
+quit

@@ -1,0 +1,113 @@
+# LAMMPS input script for RNEMD - Muller-Plathe
+
+variable        NAME index MP
+log             ${NAME}.log
+variable        infile index CO2_cuboid.data
+shell           mkdir MULLER_PLATHE
+variable        POST index MULLER_PLATHE
+
+variable        timestep         equal 0.5
+variable        kb               equal 0.0019872067
+variable        nz_layers        equal 60
+variable        nx_layers        equal 3
+variable        bin_size         equal 1/${nz_layers} 
+variable        hot_bin          equal (${nz_layers}/2)+1
+variable        swap_freq        equal 4000
+variable        kappa_run_eq     equal 5000000
+variable        kappa_run_pr     equal 20000000
+variable        thermo_NUM       equal 4000
+variable        N_every          equal 10
+variable        N_repeat         equal 1000
+variable        N_freq           equal 10000
+
+variable        t                equal step
+variable        T                equal temp
+variable        P                equal press
+variable        Total_Energy     equal etotal
+variable        V                equal vol
+variable        Total_Density    equal density
+variable        xl               equal lx
+variable        zl               equal lz
+
+units		    real
+atom_style	    full
+boundary        p p p
+pair_style	    lj/cut/coul/long 12.0
+pair_modify     mix arithmetic tail yes   # Geometric for EPM2
+kspace_style    pppm 1e-6     
+bond_style      harmonic
+angle_style     harmonic
+
+#---------------------------- NEIGHBOUR_LIST/INITIALIZATION -----------------------------------------------------------------------#
+
+read_data       ${infile} 
+
+neighbor	    3.0 bin
+neigh_modify    every 1 delay 0 check yes
+
+#_______________________ EQUILIBRATION __________________________#
+
+compute         ke all ke/atom
+variable        temp atom c_ke/(1.5*${kb})
+
+fix             NVE_MP_eq all nve
+
+compute         temp_layers all chunk/atom bin/1d z lower ${bin_size} units reduced
+fix		        temp_profile_eq all ave/chunk ${N_every} ${N_repeat} ${N_freq} temp_layers v_temp file ${POST}/temp_profile_eq.MP
+
+variable        hot_layer equal f_temp_profile_eq[${hot_bin}][3]
+variable        cold_layer equal f_temp_profile_eq[1][3]  
+
+print           "Step T_hot T_cold" file ${POST}/Temperature_eq.out
+fix             PRINT_T all print ${N_freq} "$t $(v_hot_layer:%.4f) $(v_cold_layer:%.4f)" &
+                append ${POST}/Temperature_eq.out title ""
+
+fix             flux_eq all thermal/conductivity ${swap_freq} z ${nz_layers}
+
+thermo_style    custom step dt temp press etotal vol density f_flux_eq
+thermo_modify   colname f_flux_eq E_delta
+thermo          ${thermo_NUM}
+
+variable        Total_Heat_Flux  equal f_flux_eq
+
+print           "Step Temp Pressure Total_Energy Volume Density x_length z_length Total_Heat_Flux" file ${POST}/Muller_Plathe_eq.out
+fix             PRINT all print ${thermo_NUM} "$t $T $P $(v_Total_Energy) $V $(v_Total_Density) $(v_xl) $(v_zl) $(v_Total_Heat_Flux)" &
+                append ${POST}/Muller_Plathe_eq.out title ""
+
+timestep        ${timestep}
+run             ${kappa_run_eq}
+
+unfix           NVE_MP_eq
+unfix           temp_profile_eq
+unfix           flux_eq
+unfix           PRINT
+unfix           PRINT_T
+reset_timestep  0 
+#_______________________ PRODUCTION __________________________#
+
+fix             NVE_MP_pr all nve
+
+fix		        temp_profile_pr all ave/chunk ${N_every} ${N_repeat} ${N_freq} temp_layers v_temp file ${POST}/temp_profile_pr.MP
+
+fix             flux_pr all thermal/conductivity ${swap_freq} z ${nz_layers}
+
+thermo_style    custom step dt temp press etotal vol density f_flux_pr
+thermo_modify   colname f_flux_pr E_delta
+thermo          ${thermo_NUM}
+
+variable        Total_Heat_Flux equal f_flux_pr
+
+variable        hot_layer equal f_temp_profile_pr[${hot_bin}][3]
+variable        cold_layer equal f_temp_profile_pr[1][3]  
+
+print           "Step T_hot T_cold" file ${POST}/Temperature_pr.out
+fix             PRINT_T all print ${N_freq} "$t $(v_hot_layer:%.4f) $(v_cold_layer:%.4f)" &
+                append ${POST}/Temperature_pr.out title ""
+
+print           "Step Temp Pressure Total_Energy Volume Density x_length z_length Total_Heat_Flux" file ${POST}/Muller_Plathe_pr.out
+fix             PRINT all print ${thermo_NUM} "$t $T $P $(v_Total_Energy) $V $(v_Total_Density) $(v_xl) $(v_zl) $(v_Total_Heat_Flux)" &
+                append ${POST}/Muller_Plathe_pr.out title ""
+
+run             ${kappa_run_pr}
+
+quit

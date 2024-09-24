@@ -1,0 +1,104 @@
+# LAMMPS input script to reshape cube box to cuboid box
+
+variable NAME index CO2_BOX
+log ${NAME}.log
+variable infile index CO2_final.data
+
+units		    real
+atom_style	    full
+boundary        p p p
+pair_style	    lj/cut/coul/long 12.0
+pair_modify     mix arithmetic tail yes   # Geometric for EPM2
+kspace_style    pppm 1e-6     
+bond_style      harmonic
+angle_style     harmonic
+
+variable  TEMP_INDEX       equal T_VAL  # in K
+variable  PRESS_INDEX      equal P_VAL  # in bar
+variable  nz_layers        equal 20
+variable  nx_layers        equal 3
+variable  timestep         equal 0.5
+
+variable  NVT_init         equal 500000           #500000
+variable  NVE_reshape      equal 10000
+variable  NVT_run_2        equal 500000           #5400000
+variable  NVE_cuboid       equal 500000           #4000000
+
+variable  simulationTemp   equal ${TEMP_INDEX}
+
+#---------------------------- NEIGHBOUR_LIST/INITIALIZATION -----------------------------------------------------------------------#
+
+read_data       ${infile} 
+
+neighbor	    3.0 bin
+neigh_modify    every 1 delay 0 check yes
+
+velocity	all scale ${simulationTemp}
+velocity    all zero linear units box
+velocity    all zero angular units box
+
+print ================================================================================================================
+print                                      "BOX-RESHAPE"
+print ================================================================================================================
+
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> BOX RESHAPE <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< #
+
+fix             NVT_init all nvt temp ${simulationTemp} ${simulationTemp} 100
+
+thermo_style    custom step vol temp press ke pe etotal density xlo ylo zlo xhi yhi zhi
+thermo          1000
+
+timestep        ${timestep}
+
+run             ${NVT_init}
+unfix           NVT_init
+
+# --------------------------------------- NVE reshape run --------------------------------------------------------------------#
+
+fix		        NVE_1 all nve
+
+variable        ulcubed      equal vol/(${nx_layers}*${nx_layers}*${nz_layers})
+variable        unit_length  equal ${ulcubed}^0.33333333
+variable        new_x_length equal ${nx_layers}*v_unit_length
+variable        new_y_length equal ${nx_layers}*v_unit_length
+variable        new_z_length equal ${nz_layers}*v_unit_length
+
+fix             reshape all deform 1 x final 0.0 ${new_x_length} y final 0.0 ${new_x_length} &
+                                      z final 0.0 ${new_z_length} units box
+
+timestep        ${timestep}
+
+run             ${NVE_reshape}
+unfix           reshape
+unfix           NVE_1
+
+velocity	    all scale ${simulationTemp}
+velocity        all zero linear units box
+velocity        all zero angular units box
+
+# --------------------------------------- NVT-init -----------------------------------------------------------------------#
+
+fix             NVT_RE all nvt temp ${simulationTemp} ${simulationTemp} 100
+
+timestep        ${timestep}
+run             ${NVT_run_2}
+
+unfix           NVT_RE
+
+velocity	    all scale ${simulationTemp}
+velocity        all zero linear units box
+velocity        all zero angular units box
+
+# --------------------------------------- NVE cuboid equilibration run -----------------------------------------------------#
+
+fix		        NVE_RE all nve
+
+timestep        ${timestep}
+
+run             ${NVE_cuboid}
+
+restart         1000000 restart_${NAME}.1 restart_${NAME}.2
+
+write_data      ${NAME}_cuboid.data
+
+quit
